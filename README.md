@@ -24,6 +24,31 @@ load, or the sensor numbers/scalings may be off. If your unit isn't that **Andro
 treat this as **unverified**: only run it on a matching unit, on **a vehicle you own**, and
 sanity-check the scalings against your own gauges.
 
+### Which cars have the right head unit?
+Two separate questions decide whether it works for you:
+
+1. **Does it load + show live data at all?** — that's the *head unit*. The dual-screen InTouch that
+   runs this Android 2.3.7 layer with App Garage shipped on roughly **Q50 MY2014–2019** and **Q60
+   (V37 coupe) MY2017–2019**. (The 2014–2015 "Q60" was the old G37-based coupe — different platform,
+   no App Garage.) **MY2020+ dropped App Garage**, and MY2023+ added 4G/a newer unit, so those are out.
+   Aftermarket "Tesla-screen" units (Aucar Mk6, JoyeAuto, …) sit in front of the factory unit and take
+   over the ports, so the `.epk` has nowhere to land on those either.
+2. **Will the numbers be right?** — that's the *engine*. Calibrated on the **VR30 (3.0t)**. Most gauges
+   are engine-independent and read correctly on any of these cars (RPM, coolant/oil temp, speed, gear,
+   throttle, per-wheel TPMS, G). The engine-specific channels — **oil pressure, power, torque** — are
+   VR30-scaled; on a VQ 3.7 / 2.0t / hybrid they can read wrong or not appear (oil pressure now hides
+   itself when it comes back negative). Frozen gauges that never move mean the unit handed the app no
+   live sensors — you'll see a **"NO LIVE CAN DETECTED"** banner in that case.
+
+## What's new in v1.1
+- **Tap the screen to switch imperial ⇄ metric** (°F/°C · mph/km-h · psi/bar · hp/kW · lb-ft/Nm),
+  remembered across launches. Defaults to imperial.
+- **Snappier gauges:** fast signals (RPM, speed, throttle, torque, power, G) are read at game rate,
+  not the old flat 5 Hz; temps/TPMS stay lazy.
+- **Loud "no live CAN" banner** instead of silently showing frozen demo values.
+- **Oil pressure hides** when it reads negative (a wrong-engine signal), and the app cleanly
+  re-subscribes so a signal (usually RPM) no longer drops on the second launch.
+
 ## How it works
 
 Under its Linux nav UI, this InTouch unit runs a customized **Android 2.3.7 (API 10, x86)** that
@@ -58,6 +83,10 @@ Raw sensor values are unlabeled floats; these were calibrated against the VR30DD
 
 These mappings are specific to the firmware above — treat them as a starting point on any other unit.
 Constants live at the top of [`GaugeView.java`](src/com/appgarage/dash/GaugeView.java).
+
+**Units are switchable at runtime** — tap the screen to flip the whole dash between imperial
+(°F, mph, psi, hp, lb-ft) and metric (°C, km/h, bar, kW, Nm); the choice is saved in
+`SharedPreferences`. The table above lists the base scalings; the conversions are applied in `onDraw`.
 
 **Not available** (not on this unit's CAN): boost/MAP, AFR/lambda, knock, ignition timing — those
 are ECU-tuning parameters only tools like EcuTek read. This is instrument-cluster-grade data.
@@ -99,7 +128,8 @@ The head unit's **App Garage** installs USB apps only as `.epk` packages. `build
 
 **Updating:** App Garage hides an install candidate whose `versionCode` is ≤ the one already
 installed, so each `build.sh` run stamps a higher `versionCode` (unix time). A new `dash.epk` will
-then appear and install over the old app **provided it's signed with the same key** (`keystore.ks`).
+then appear and install over the old app **provided it's signed with the same key** (`keystore.ks`);
+the current release is `versionName` **1.1**.
 If it doesn't show in the list, or you rebuilt with a different key — a fresh clone makes its own,
 and the released `.epk` differs from a self-built one — **uninstall the existing "AppGarage Dash"
 first**, then install.

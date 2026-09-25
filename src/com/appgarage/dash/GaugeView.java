@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.view.MotionEvent;
 import android.view.View;
 
 /**
@@ -20,6 +21,10 @@ import android.view.View;
  *   SPEED(17) = km/h    -> mph = raw * 0.621.
  *   GEAR(22) enum: P/R/N/D = 1/2/3/4, manual M1..M7 = 16..22 (confirmed on-car).
  *   G lat(20)/long(21): raw, ~1g full-scale assumed (not yet calibrated).
+ *
+ * v1.1: tap anywhere to flip the whole dash between imperial and metric (persisted);
+ * oil pressure hides itself when it reads negative (a wrong-engine signal, e.g. VQ);
+ * a loud banner is drawn when the values are the built-in demo, not live CAN.
  */
 public class GaugeView extends View {
 
@@ -32,11 +37,18 @@ public class GaugeView extends View {
     public static float OILP_RAW_TO_PSI = 145.0377f;   // MPa -> psi (~22 psi warm idle)
     public static float POWER_RAW_TO_KW = 0.0001047f;  // raw = rpm*Nm -> kW
     public static float SPEED_RAW_TO_MPH = 0.621371f;  // km/h -> mph
+    // unit conversions for the imperial/metric toggle
+    static final float PSI_TO_BAR  = 0.0689476f;
+    static final float KW_TO_HP    = 1.34102f;
+    static final float NM_TO_LBFT  = 0.737562f;
 
     private static final int N = 64;
     private final float[] v = new float[N];
     private final boolean[] have = new boolean[N];
     private String status = "";
+    private boolean demo = false;                 // true => values are seedDemo(), not live CAN
+    private boolean imperial = true;              // tap to flip; default imperial (persisted)
+    private static final String PREFS = "agdash", KEY_IMP = "imperial";
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF oval = new RectF();
 
@@ -45,20 +57,42 @@ public class GaugeView extends View {
             VAL=0xFFFFFFFF, DIM=0xFF6A7684, OK=0xFF37E07A, WARN=0xFFFFB020, DANGER=0xFFFF4040,
             ARC_BG=0xFF243040, ARC_FG=0xFF39C0FF;
 
-    public GaugeView(Context c) { super(c); setBackgroundColor(BG); p.setTypeface(Typeface.MONOSPACE); }
+    public GaugeView(Context c) {
+        super(c);
+        setBackgroundColor(BG);
+        p.setTypeface(Typeface.MONOSPACE);
+        setClickable(true);
+        try { imperial = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_IMP, true); }
+        catch (Throwable ignored) {}
+    }
+
+    /** tap anywhere -> flip units, remember the choice. */
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        if (e.getAction() == MotionEvent.ACTION_UP) {
+            imperial = !imperial;
+            try { getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_IMP, imperial).commit(); } catch (Throwable ignored) {}
+            invalidate();
+        }
+        return true;
+    }
 
     public void setName(int t, String n) {}                // labels are hardcoded
     public void setValue(int t, float val) { if (t>=0 && t<N) { v[t]=val; have[t]=true; } }
     public void setStatus(String s) { status = s; }
+    public void setDemo(boolean d) { demo = d; }
     private float g(int t) { return have[t] ? v[t] : 0f; }
     private boolean h(int t) { return have[t]; }
+    private static float cToF(float c) { return c*9f/5f + 32f; }
 
     /** seed representative values so the layout is visible on an emulator (no vehicle bus). */
     public void seedDemo() {
         int[] t = {TORQUE,RPM,COOLANT,OILT,OILP,SPEED,GLAT,GLONG,GEAR,THROTTLE,POWER,TP_FR,TP_FL,TP_RR,TP_RL};
         float[] val = {180f,3120f,92f,105f,0.42f,68f,0.35f,-0.20f,3f,42f,3120f*180f,38.5f,38.5f,37f,36.8f};
         for (int i=0;i<t.length;i++) setValue(t[i], val[i]);
-        status = "DEMO (no vehicle bus) — real values appear on the car";
+        demo = true;
+        status = "DEMO (no vehicle bus) — sample values, not live";
     }
 
     @Override
@@ -70,28 +104,53 @@ public class GaugeView extends View {
 
         // right column: temp/pressure bars
         int bx=330, bw=W-bx-16;
-        drawBar(cv, bx, 24,  bw, "OIL TEMP",  g(OILT),  40,150, 120,140, "°C", h(OILT));
-        drawBar(cv, bx, 78,  bw, "COOLANT",   g(COOLANT),40,130, 110,120, "°C", h(COOLANT));
-        drawBar(cv, bx, 132, bw, "OIL PRESS", g(OILP)*OILP_RAW_TO_PSI, 0,100, 90,100, "psi", h(OILP)); // warns only on abnormally HIGH psi
+        if (imperial) {
+            drawBar(cv, bx, 24,  bw, "OIL TEMP", cToF(g(OILT)),   cToF(40),cToF(150), cToF(120),cToF(140), "°F", h(OILT));
+            drawBar(cv, bx, 78,  bw, "COOLANT",  cToF(g(COOLANT)),cToF(40),cToF(130), cToF(110),cToF(120), "°F", h(COOLANT));
+        } else {
+            drawBar(cv, bx, 24,  bw, "OIL TEMP", g(OILT),   40,150, 120,140, "°C", h(OILT));
+            drawBar(cv, bx, 78,  bw, "COOLANT",  g(COOLANT),40,130, 110,120, "°C", h(COOLANT));
+        }
+
+        // oil pressure: hide when negative (a wrong-engine signal, e.g. VQ reported -14 psi)
+        float oilPsi = g(OILP)*OILP_RAW_TO_PSI;
+        boolean oilHas = h(OILP) && oilPsi >= 0f;
+        if (imperial)
+            drawBar(cv, bx, 132, bw, "OIL PRESS", oilPsi,            0,100,               90,100,               "psi", oilHas);
+        else
+            drawBar(cv, bx, 132, bw, "OIL PRESS", oilPsi*PSI_TO_BAR, 0,100*PSI_TO_BAR, 90*PSI_TO_BAR,100*PSI_TO_BAR, "bar", oilHas);
 
         // speed + gear + throttle row
-        drawBigNum(cv, bx,      196, "SPEED", fmt0(g(SPEED)*SPEED_RAW_TO_MPH), "mph", h(SPEED));
-        drawBigNum(cv, bx+180,  196, "GEAR",  gearStr(),      "",     h(GEAR));
-        drawBigNum(cv, bx+300,  196, "THR",   fmt0(g(THROTTLE)), "%",  h(THROTTLE));
+        if (imperial) drawBigNum(cv, bx, 196, "SPEED", fmt0(g(SPEED)*SPEED_RAW_TO_MPH), "mph",  h(SPEED));
+        else          drawBigNum(cv, bx, 196, "SPEED", fmt0(g(SPEED)),                  "km/h", h(SPEED));
+        drawBigNum(cv, bx+180,  196, "GEAR",  gearStr(),          "",     h(GEAR));
+        drawBigNum(cv, bx+300,  196, "THR",   fmt0(g(THROTTLE)),  "%",    h(THROTTLE));
 
         // power + torque
-        p.setTextSize(14f);
-        p.setColor(LABEL); cv.drawText("POWER", bx, 300, p);
-        p.setColor(VAL);   p.setTextSize(26f); cv.drawText(fmt0(g(POWER)*POWER_RAW_TO_KW)+" kW", bx+70, 302, p);
+        p.setColor(LABEL); p.setTextSize(14f); cv.drawText("POWER", bx, 300, p);
+        p.setColor(VAL);   p.setTextSize(26f);
+        String pw = imperial ? fmt0(g(POWER)*POWER_RAW_TO_KW*KW_TO_HP)+" hp" : fmt0(g(POWER)*POWER_RAW_TO_KW)+" kW";
+        cv.drawText(pw, bx+70, 302, p);
         p.setColor(LABEL); p.setTextSize(14f); cv.drawText("TORQUE", bx, 328, p);
-        p.setColor(VAL);   p.setTextSize(26f); cv.drawText(fmt0(g(TORQUE))+" Nm", bx+70, 330, p);
+        p.setColor(VAL);   p.setTextSize(26f);
+        String tq = imperial ? fmt0(g(TORQUE)*NM_TO_LBFT)+" lb-ft" : fmt0(g(TORQUE))+" Nm";
+        cv.drawText(tq, bx+70, 330, p);
 
         drawTpms(cv, 16, 350, 300);                          // bottom-left TPMS corners
         drawGball(cv, W-120, 360, 90);                       // bottom-right G-ball
 
-        // status footer
+        // status footer + units hint
         p.setColor(DIM); p.setTextSize(11f);
         cv.drawText(status, 16, H-8, p);
+        String u = (imperial?"IMPERIAL":"METRIC") + " — tap to switch";
+        cv.drawText(u, W - p.measureText(u) - 8, H-8, p);
+
+        // loud demo banner drawn last so it can't be missed
+        if (demo) {
+            p.setColor(WARN); cv.drawRect(0, 0, W, 22, p);
+            p.setColor(0xFF101010); p.setTextSize(14f);
+            center(cv, "DEMO — NO LIVE CAN DETECTED (sample values, not your car)", W/2, 16);
+        }
     }
 
     private void drawRpm(Canvas cv, int cx, int cy, int r) {
@@ -131,15 +190,18 @@ public class GaugeView extends View {
     }
 
     private void drawTpms(Canvas cv,int x,int y,int w){
-        p.setColor(LABEL); p.setTextSize(14f); cv.drawText("TPMS (psi)", x, y-4, p);
+        p.setColor(LABEL); p.setTextSize(14f); cv.drawText(imperial?"TPMS (psi)":"TPMS (bar)", x, y-4, p);
         String[] lab={"FL","FR","RL","RR"}; int[] typ={TP_FL,TP_FR,TP_RL,TP_RR};
         int cw=w/2, ch=44;
         for(int i=0;i<4;i++){
             int cx=x+(i%2)*cw, cy=y+(i/2)*ch;
             p.setColor(DIM); p.setTextSize(13f); cv.drawText(lab[i], cx, cy+18, p);
-            float val=g(typ[i]); int c = (have[typ[i]] && (val<30||val>42))?WARN:VAL;
-            p.setColor(have[typ[i]]?c:DIM); p.setTextSize(24f);
-            cv.drawText(have[typ[i]]?fmt1(val):"--", cx+34, cy+20, p);
+            float raw=g(typ[i]);                                  // raw is psi
+            boolean has=have[typ[i]];
+            int c = (has && (raw<30||raw>42))?WARN:VAL;           // warn thresholds stay in psi
+            float disp = imperial ? raw : raw*PSI_TO_BAR;
+            p.setColor(has?c:DIM); p.setTextSize(24f);
+            cv.drawText(has?fmt1(disp):"--", cx+34, cy+20, p);
         }
     }
 
